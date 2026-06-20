@@ -36,9 +36,27 @@ const allowedOrigins = [
   "http://localhost:5173",
 ].filter(Boolean);
 
+// Allow this project's Vercel deployments (production + git-branch + preview URLs)
+const vercelRegex = /^https:\/\/bidverse-frontend[a-z0-9-]*\.vercel\.app$/;
+
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true; // non-browser tools (curl, health checks)
+  if (allowedOrigins.includes(origin)) return true;
+  if (vercelRegex.test(origin)) return true;
+  return false;
+};
+
+const corsOrigin = (origin, callback) => {
+  if (isAllowedOrigin(origin)) {
+    callback(null, true);
+  } else {
+    callback(new Error("Not allowed by CORS"));
+  }
+};
+
 const io = new Server(httpServer, {
   cors: {
-    origin: allowedOrigins,
+    origin: corsOrigin,
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -50,14 +68,7 @@ app.set("io", io);
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(morgan(isProd ? "combined" : "dev"));
 app.use(cors({
-  origin: (origin, callback) => {
-    // allow non-browser tools (no origin) and whitelisted origins
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
+  origin: corsOrigin,
   credentials: true,
 }));
 app.use(express.json({ limit: "5mb" }));
