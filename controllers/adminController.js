@@ -1,25 +1,53 @@
 import mongoose from "mongoose";
 import User from "../models/User.js";
-import Auction from "../models/Auction.js"; // ⚠️ adjust path/name if yours differs
+import Auction from "../models/Auction.js";
+import Bid from "../models/Bid.js";
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 const ALLOWED_ROLES = ["buyer", "seller", "admin"];
-// ⚠️ match these to your Auction schema's status enum
-const ALLOWED_AUCTION_STATUS = ["pending", "active", "closed", "cancelled"];
+const ALLOWED_AUCTION_STATUS = ["scheduled", "live", "ended", "cancelled"];
 
 // ---------- DASHBOARD ----------
 export const getDashboardStats = async (req, res) => {
   try {
-    const [totalUsers, totalAdmins, totalAuctions, activeAuctions] = await Promise.all([
+    const [
+      totalUsers,
+      totalBuyers,
+      totalSellers,
+      totalAuctions,
+      liveAuctions,
+      endedAuctions,
+      totalBids,
+      revenueAgg,
+    ] = await Promise.all([
       User.countDocuments(),
-      User.countDocuments({ role: "admin" }),
+      User.countDocuments({ role: "buyer" }),
+      User.countDocuments({ role: "seller" }),
       Auction.countDocuments(),
-      Auction.countDocuments({ status: "active" }),
+      Auction.countDocuments({ status: "live" }),
+      Auction.countDocuments({ status: "ended" }),
+      Bid.countDocuments(),
+      // Total revenue = sum of final price of ended auctions that have a winner
+      Auction.aggregate([
+        { $match: { status: "ended", winnerId: { $ne: null } } },
+        { $group: { _id: null, total: { $sum: "$currentPrice" } } },
+      ]),
     ]);
+
+    const totalRevenue = revenueAgg[0]?.total || 0;
 
     res.status(200).json({
       success: true,
-      stats: { totalUsers, totalAdmins, totalAuctions, activeAuctions },
+      stats: {
+        totalUsers,
+        totalBuyers,
+        totalSellers,
+        totalAuctions,
+        liveAuctions,
+        endedAuctions,
+        totalBids,
+        totalRevenue,
+      },
     });
   } catch (err) {
     console.error("getDashboardStats error:", err);
@@ -30,20 +58,21 @@ export const getDashboardStats = async (req, res) => {
 // ---------- USERS ----------
 export const getAllUsers = async (req, res) => {
   try {
-    const page = Math.max(parseInt(req.query.page) || 1, 1);
-    const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 100);
-    const skip = (page - 1) * limit;
+    const { search, role } = req.query;
+    const query = {};
+    if (role) query.role = role;
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
+      ];
+    }
 
-    const [users, total] = await Promise.all([
-      User.find()
-        .select("-password -refreshToken")
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit),
-      User.countDocuments(),
-    ]);
+    const users = await User.find(query)
+      .select("-password -refreshToken")
+      .sort({ createdAt: -1 });
 
-    res.status(200).json({ success: true, page, limit, total, users });
+    res.status(200).json({ success: true, users });
   } catch (err) {
     console.error("getAllUsers error:", err);
     res.status(500).json({ success: false, message: "Something went wrong" });
@@ -70,7 +99,6 @@ export const updateUserRole = async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    // never let the last admin be demoted
     if (target.role === "admin" && role !== "admin") {
       const adminCount = await User.countDocuments({ role: "admin" });
       if (adminCount <= 1) {
@@ -108,7 +136,6 @@ export const toggleUserStatus = async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    // never let the last active admin be deactivated
     if (target.role === "admin" && target.isActive) {
       const activeAdmins = await User.countDocuments({ role: "admin", isActive: true });
       if (activeAdmins <= 1) {
@@ -164,16 +191,17 @@ export const deleteUser = async (req, res) => {
 // ---------- AUCTIONS ----------
 export const getAllAuctionsAdmin = async (req, res) => {
   try {
-    const page = Math.max(parseInt(req.query.page) || 1, 1);
-    const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 100);
-    const skip = (page - 1) * limit;
+    const { search, status } = req.query;
+    const query = {};
+    if (status) query.status = status;
+    if (search) query.title = { $regex: search, $options: "i" };
 
-    const [auctions, total] = await Promise.all([
-      Auction.find().sort({ createdAt: -1 }).skip(skip).limit(limit),
-      Auction.countDocuments(),
-    ]);
+    const auctions = await Auction.find(query)
+      .populate("sellerId", "name email")
+      .populate("winnerId", "name email")
+      .sort({ createdAt: -1 });
 
-    res.status(200).json({ success: true, page, limit, total, auctions });
+    res.status(200).json({ success: true, auctions });
   } catch (err) {
     console.error("getAllAuctionsAdmin error:", err);
     res.status(500).json({ success: false, message: "Something went wrong" });
@@ -192,9 +220,13 @@ export const updateAuctionStatus = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid status" });
     }
 
+    const update = { status };
+    // If an auction is moved out of "ended", it no longer has a winner
+    if (status !== "ended") update.winnerId = null;
+
     const auction = await Auction.findByIdAndUpdate(
       id,
-      { status },
+      update,
       { new: true, runValidators: true }
     );
     if (!auction) {

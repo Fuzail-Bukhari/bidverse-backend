@@ -1,5 +1,6 @@
 import cron from "node-cron";
 import Auction from "../models/Auction.js";
+import Bid from "../models/Bid.js";
 import Notification from "../models/Notification.js";
 
 export const startAuctionCronJob = (io) => {
@@ -21,22 +22,37 @@ export const startAuctionCronJob = (io) => {
       });
 
       for (const auction of expiredAuctions) {
+        // Find the highest bid for this auction
+        const highestBid = await Bid.findOne({ auctionId: auction._id }).sort({
+          amount: -1,
+        });
+
+        // Highest bidder wins (winner is null only if there were zero bids)
+        if (highestBid) {
+          auction.winnerId = highestBid.bidderId;
+          auction.currentPrice = highestBid.amount;
+        } else {
+          auction.winnerId = null;
+        }
+
         auction.status = "ended";
         await auction.save();
 
         // Notify seller
         await Notification.create({
           userId: auction.sellerId,
-          message: `Your auction "${auction.title}" has ended.`,
+          message: auction.winnerId
+            ? `Your auction "${auction.title}" ended and sold for $${auction.currentPrice}.`
+            : `Your auction "${auction.title}" ended with no bids.`,
           type: "ended",
           auctionId: auction._id,
         });
 
-        // Notify winner if exists
+        // Notify the winner if there is one
         if (auction.winnerId) {
           await Notification.create({
             userId: auction.winnerId,
-            message: `Congratulations! You won the auction "${auction.title}" with a bid of $${auction.currentPrice}.`,
+            message: `Congratulations! You won "${auction.title}" with the highest bid of $${auction.currentPrice}.`,
             type: "won",
             auctionId: auction._id,
           });
