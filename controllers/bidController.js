@@ -4,6 +4,14 @@ import Notification from "../models/Notification.js";
 
 export const placeBid = async (req, res) => {
   try {
+    // Only buyers can place bids (sellers/admins blocked)
+    if (req.user.role !== "buyer") {
+      return res.status(403).json({
+        success: false,
+        message: "Only buyers can place bids.",
+      });
+    }
+
     const { amount } = req.body;
     const auctionId = req.params.auctionId;
     const bidderId = req.user._id;
