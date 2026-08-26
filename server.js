@@ -20,45 +20,20 @@ import bidRoutes from "./routes/bids.js";
 import notificationRoutes from "./routes/notifications.js";
 import adminRoutes from "./routes/admin.js";
 import aiRoutes from "./routes/ai.js";
-app.use("/api/ai", aiRoutes);
 
 dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
 
-const isProd = process.env.NODE_ENV === "production";
-const PORT = process.env.PORT || 5000;
-
-// Required on Railway / any reverse proxy so `secure` cookies and req.secure work.
-app.set("trust proxy", 1);
-
 const allowedOrigins = [
   process.env.CLIENT_URL,
   "http://localhost:5173",
-].filter(Boolean);
-
-// Allow this project's Vercel deployments (production + git-branch + preview URLs)
-const vercelRegex = /^https:\/\/bidverse-frontend[a-z0-9-]*\.vercel\.app$/;
-
-const isAllowedOrigin = (origin) => {
-  if (!origin) return true; // non-browser tools (curl, health checks)
-  if (allowedOrigins.includes(origin)) return true;
-  if (vercelRegex.test(origin)) return true;
-  return false;
-};
-
-const corsOrigin = (origin, callback) => {
-  if (isAllowedOrigin(origin)) {
-    callback(null, true);
-  } else {
-    callback(new Error("Not allowed by CORS"));
-  }
-};
+];
 
 const io = new Server(httpServer, {
   cors: {
-    origin: corsOrigin,
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -68,65 +43,49 @@ initSocket(io);
 app.set("io", io);
 
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(morgan(isProd ? "combined" : "dev"));
+app.use(morgan("dev"));
 app.use(cors({
-  origin: corsOrigin,
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   credentials: true,
 }));
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json());
 app.use(cookieParser());
 app.use(passport.initialize());
 
-// Health check (Railway / uptime monitors hit this)
-app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
-
+// Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/auth", googleAuthRoutes);
 app.use("/api/auctions", auctionRoutes);
 app.use("/api/bids", bidRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/ai", aiRoutes);
 
 app.get("/", (req, res) => {
   res.json({ message: "BidVerse API running 🚀" });
 });
 
-// 404 — unknown routes
-app.use((req, res) => {
-  res.status(404).json({ success: false, message: "Route not found" });
-});
-
-// Centralized error handler
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(err.status || 500).json({
     success: false,
     message: err.message || "Internal Server Error",
-    ...(isProd ? {} : { stack: err.stack }),
   });
 });
-
-if (!process.env.MONGO_URI) {
-  console.error("❌ MONGO_URI is not defined");
-  process.exit(1);
-}
 
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("✅ MongoDB connected");
     startAuctionCronJob(io);
-    httpServer.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT} (${isProd ? "production" : "development"})`);
+    httpServer.listen(process.env.PORT || 5000, () => {
+      console.log(`🚀 Server running on port ${process.env.PORT || 5000}`);
     });
   })
-  .catch((err) => {
-    console.error("❌ DB connection error:", err);
-    process.exit(1);
-  });
-
-process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled Rejection:", reason);
-});
-
-export default app;
+  .catch((err) => console.error("❌ DB connection error:", err));
